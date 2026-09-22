@@ -437,3 +437,336 @@
       if (s === 'sem_dados')    return `<span class="badge badge-programado">— sem dados</span>`;
       return `<span class="badge">${s}</span>`;
     }
+
+
+    let flightRequest = 0;
+    /* ── Selects cascata ────────────────────────── */
+    async function loadAirports() {
+      try {
+        const r = await fetch('data/airports.json');
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        airports = await r.json();
+        const states = [...new Set(airports.map(a => a.state))].sort();
+        const sel = document.getElementById('sel-state');
+        sel.innerHTML = '<option value="">Todos os estados</option>';
+        states.forEach(s => {
+          const o = document.createElement('option');
+          o.value = o.textContent = s;
+          sel.appendChild(o);
+        });
+        document.getElementById('meta-bar').textContent =
+          `${airports.length} aeroportos disponíveis · Dados históricos via Supabase`;
+      } catch(e) {
+        document.getElementById('meta-bar').textContent = 'Erro ao carregar aeroportos: ' + e.message;
+      }
+
+      // Define data padrão como hoje
+      document.getElementById('sel-date').value = todayIso();
+    }
+
+    function onStateChange() {
+      currentIcao = '';
+      document.getElementById('info-cards').style.display = 'none';
+      const state = document.getElementById('sel-state').value;
+      const selCity = document.getElementById('sel-city');
+      const selAp   = document.getElementById('sel-airport');
+      selCity.innerHTML = '<option value="">Selecione o município</option>';
+      selAp.innerHTML   = '<option value="">Selecione o município</option>';
+      document.getElementById('btn-refresh').disabled = true;
+      chegadasAll = partidasAll = chegadasFilt = partidasFilt = [];
+      renderTables();
+      if (!state) return;
+      const cities = [...new Set(airports.filter(a => a.state === state).map(a => a.city))].sort();
+      cities.forEach(c => {
+        const o = document.createElement('option');
+        o.value = o.textContent = c; selCity.appendChild(o);
+      });
+      if (cities.length === 1) { selCity.value = cities[0]; onCityChange(); }
+    }
+
+    function onCityChange() {
+      currentIcao = '';
+      document.getElementById('info-cards').style.display = 'none';
+      const state = document.getElementById('sel-state').value;
+      const city  = document.getElementById('sel-city').value;
+      const selAp = document.getElementById('sel-airport');
+      selAp.innerHTML = '<option value="">Selecione o aeroporto</option>';
+      document.getElementById('btn-refresh').disabled = true;
+      chegadasAll = partidasAll = chegadasFilt = partidasFilt = [];
+      renderTables();
+      if (!city) return;
+      const aps = airports.filter(a => a.state === state && a.city === city);
+      aps.forEach(a => {
+        const o = document.createElement('option');
+        o.value = a.icao;
+        o.textContent = `${a.icao} – ${a.name}`;
+        selAp.appendChild(o);
+      });
+      if (aps.length === 1) { selAp.value = aps[0].icao; onAirportChange(); }
+    }
+
+    function onAirportChange() {
+      const icao = document.getElementById('sel-airport').value;
+      document.getElementById('btn-refresh').disabled = !icao;
+      currentIcao = icao;
+      if (icao) loadFlights();
+    }
+
+    /* ── Carregar voos do Supabase ──────────────── */
+    async function loadFlights() {
+      const icao = document.getElementById('sel-airport').value;
+      const date = document.getElementById('sel-date').value;
+      if (!icao || !date) return;
+      currentIcao = icao;
+      const request = ++flightRequest;
+
+      const btn = document.getElementById('btn-refresh');
+      btn.disabled = true; btn.textContent = '…';
+      document.getElementById('meta-bar').textContent = `Consultando Supabase para ${icao} em ${fmtData(date)}...`;
+
+      try {
+        // Busca chegadas e partidas em paralelo
+        const [chegadas, partidas] = await Promise.all([
+          sbFetchAll(`voos?icao_destino=eq.${icao}&data_referencia=eq.${date}&order=chegada_iso.asc`),
+          sbFetchAll(`voos?icao_origem=eq.${icao}&data_referencia=eq.${date}&order=partida_iso.asc`),
+        ]);
+
+        if (request !== flightRequest || icao !== document.getElementById('sel-airport').value) return;
+        chegadasAll  = chegadas;
+        partidasAll  = partidas;
+        pagChegadas  = 1;
+        pagPartidas  = 1;
+
+        // Info cards
+        const ap = airports.find(a => a.icao === icao);
+        document.getElementById('airport-name').textContent =
+          ap ? `${ap.city} — ${ap.name}` : icao;
+        document.getElementById('airport-subtitle').textContent =
+          `ICAO: ${icao}${ap ? ' · ' + ap.state : ''} · Fonte: SIROS/ANAC via Supabase`;
+
+        document.getElementById('card-icao').textContent     = icao;
+        document.getElementById('card-data').textContent     = fmtData(date);
+        document.getElementById('card-chegadas').textContent = chegadas.length;
+        document.getElementById('card-partidas').textContent = partidas.length;
+        document.getElementById('info-cards').style.display  = 'flex';
+
+        document.getElementById('card-pipeline').textContent = '—';
+        // Ultimo pipeline
+        try {
+          const exec = await sbFetch('execucoes?order=concluido_em.desc&limit=1');
+          if (request === flightRequest && exec?.[0]?.concluido_em) {
+            const dt = new Date(exec[0].concluido_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+            document.getElementById('card-pipeline').textContent = dt;
+          }
+        } catch {}
+
+        if (request !== flightRequest) return;
+        document.getElementById('meta-bar').textContent =
+          `Dados de ${fmtData(date)} · ${chegadas.length} chegadas · ${partidas.length} partidas · Clique no cabeçalho para ordenar`;
+
+        populateAirlineFilter();
+        applyFilters();
+
+      } catch(e) {
+        if (request !== flightRequest) return;
+        document.getElementById('info-cards').style.display = 'none';
+        document.getElementById('meta-bar').textContent = 'Erro ao consultar Supabase: ' + e.message;
+        chegadasAll = partidasAll = chegadasFilt = partidasFilt = [];
+        renderTables();
+      } finally {
+        if (request === flightRequest) { btn.disabled = !document.getElementById('sel-airport').value; btn.textContent = '↺ Atualizar'; }
+      }
+    }
+
+    /* ── Filtros e ordenação ────────────────────── */
+    function populateAirlineFilter() {
+      const airlines = new Set([...chegadasAll, ...partidasAll].map(f => f.nome_empresa).filter(Boolean));
+      const sel = document.getElementById('filter-airline');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">Todas</option>';
+      [...airlines].sort().forEach(a => {
+        const o = document.createElement('option');
+        o.value = o.textContent = a;
+        if (a === cur) o.selected = true;
+        sel.appendChild(o);
+      });
+    }
+
+    function applyFilters() {
+      const fAirl = document.getElementById('filter-airline').value;
+      const fType = document.getElementById('filter-type').value;
+
+      chegadasFilt = chegadasAll.filter(f =>
+        (!fAirl || f.nome_empresa === fAirl) &&
+        (!fType || f.tipo_operacao === fType)
+      );
+      partidasFilt = partidasAll.filter(f =>
+        (!fAirl || f.nome_empresa === fAirl) &&
+        (!fType || f.tipo_operacao === fType)
+      );
+      pagChegadas = pagPartidas = 1;
+      renderTables();
+    }
+
+    function sortTable(which, col) {
+      if (which === 'chegadas') {
+        sortChegadas.asc = sortChegadas.col === col ? !sortChegadas.asc : true;
+        sortChegadas.col = col;
+        chegadasFilt.sort((a, b) => {
+          const v = (a[col] || '') < (b[col] || '') ? -1 : 1;
+          return sortChegadas.asc ? v : -v;
+        });
+        pagChegadas = 1;
+      } else {
+        sortPartidas.asc = sortPartidas.col === col ? !sortPartidas.asc : true;
+        sortPartidas.col = col;
+        partidasFilt.sort((a, b) => {
+          const v = (a[col] || '') < (b[col] || '') ? -1 : 1;
+          return sortPartidas.asc ? v : -v;
+        });
+        pagPartidas = 1;
+      }
+      renderTables();
+    }
+
+    /* ── Renderização ────────────────────────────── */
+    function renderRow(f, kind) {
+      const horario = kind === 'arrival'
+        ? fmtHora(f.chegada_iso)
+        : fmtHora(f.partida_iso);
+      const rota = kind === 'arrival'
+        ? (f.icao_origem || '—')
+        : (f.icao_destino || '—');
+      const assentos = f.assentos
+        ? `<span class="seats-pill">✦ ${escapeHtml(f.assentos)}</span>` : '—';
+      return `<tr>
+        <td class="td-time">${escapeHtml(horario)}</td>
+        <td class="td-flight">${escapeHtml(f.icao_empresa || '')}${escapeHtml(f.numero_voo || '?')}</td>
+        <td><span class="airline-pill">${escapeHtml(f.nome_empresa || '?')}</span></td>
+        <td class="td-muted">${escapeHtml(f.equipamento || '—')}</td>
+        <td>${assentos}</td>
+        <td class="td-muted">${escapeHtml(rota)}</td>
+        <td>${opBadge(f.tipo_operacao)}</td>
+      </tr>`;
+    }
+
+    function renderPagination(id, data, page, setter) {
+      const total = Math.ceil(data.length / PER_PAGE) || 1;
+      const el = document.getElementById(id);
+      if (total <= 1) { el.innerHTML = ''; return; }
+      let html = `<span>${data.length} resultados · Página</span>`;
+      for (let i = 1; i <= total; i++) {
+        html += `<button class="page-btn${i===page?' active':''}" onclick="${setter}(${i})">${i}</button>`;
+      }
+      el.innerHTML = html;
+    }
+
+    function setPageC(p) { pagChegadas = p; renderTables(); }
+    function setPageP(p) { pagPartidas = p; renderTables(); }
+
+    function renderTables() {
+      const tbC = document.getElementById('tbody-chegadas');
+      const tbP = document.getElementById('tbody-partidas');
+
+      if (!chegadasFilt.length) {
+        tbC.innerHTML = '<tr><td colspan="7" class="empty">Nenhuma chegada para o filtro selecionado.</td></tr>';
+      } else {
+        const slice = chegadasFilt.slice((pagChegadas-1)*PER_PAGE, pagChegadas*PER_PAGE);
+        tbC.innerHTML = slice.map(f => renderRow(f, 'arrival')).join('');
+      }
+
+      if (!partidasFilt.length) {
+        tbP.innerHTML = '<tr><td colspan="7" class="empty">Nenhuma partida para o filtro selecionado.</td></tr>';
+      } else {
+        const slice = partidasFilt.slice((pagPartidas-1)*PER_PAGE, pagPartidas*PER_PAGE);
+        tbP.innerHTML = slice.map(f => renderRow(f, 'departure')).join('');
+      }
+
+      renderPagination('pag-chegadas', chegadasFilt, pagChegadas, 'setPageC');
+      renderPagination('pag-partidas', partidasFilt, pagPartidas, 'setPageP');
+    }
+
+    // Pagina no servidor para não limitar silenciosamente aeroportos movimentados.
+    async function sbFetchAll(path) {
+      const result = [];
+      for (let offset = 0; ; ) {
+        const page = await sbFetch(`${path}&limit=500&offset=${offset}`);
+        if (!Array.isArray(page)) throw new Error('Resposta inválida do banco');
+        if (!page.length) return result;
+        result.push(...page);
+        offset += page.length;
+      }
+    }
+
+    async function loadPipeline() {
+      const body = document.getElementById('tbody-pipeline');
+      body.innerHTML = '<tr><td colspan="6" class="empty">Carregando...</td></tr>';
+      try {
+        const rows = await sbFetch('execucoes?order=concluido_em.desc&limit=30');
+        body.innerHTML = rows.length ? rows.map(r => `<tr>
+          <td>${escapeHtml(fmtDatetime(r.concluido_em))}</td>
+          <td>${escapeHtml((r.aeroportos_buscados || []).join(', '))}</td>
+          <td>${escapeHtml(r.voos_processados ?? 0)}</td>
+          <td>${escapeHtml(r.lotes_enviados ?? 0)}</td>
+          <td>${escapeHtml(r.erros ?? 0)}</td>
+          <td>${statusPipelineBadge(r.status)}</td></tr>`).join('')
+          : '<tr><td colspan="6" class="empty">Nenhuma execução registrada.</td></tr>';
+      } catch (e) {
+        body.innerHTML = `<tr><td colspan="6" class="empty">${escapeHtml('Erro ao consultar pipeline: ' + e.message)}</td></tr>`;
+      }
+    }
+
+    let historyRequest = 0;
+    async function loadHistorico() {
+      const request = ++historyRequest;
+      const icao = document.getElementById('hist-icao').value.trim().toUpperCase();
+      const month = document.getElementById('hist-ano-mes').value;
+      const meta = document.getElementById('hist-meta');
+      histAll = []; pagHist = 1; renderHistorico();
+      document.getElementById('hist-stats').style.display = 'none';
+      if (!/^[A-Z]{4}$/.test(icao) || !/^\d{4}-\d{2}$/.test(month)) {
+        meta.textContent = 'Informe um ICAO de quatro letras e o mês.';
+        return;
+      }
+      meta.textContent = 'Consultando histórico...';
+      try {
+        const rows = await sbFetchAll(`historico_vra?ano_mes=eq.${month}&or=(icao_origem.eq.${icao},icao_destino.eq.${icao})&order=dt_referencia.asc,id.asc`);
+        if (request !== historyRequest) return;
+        histAll = rows;
+        const real = rows.filter(r => String(r.situacao).toLowerCase().includes('realizado')).length;
+        const canc = rows.filter(r => String(r.situacao).toLowerCase().includes('cancelado')).length;
+        const delays = rows.filter(r => r.atraso_partida !== null && r.atraso_partida !== undefined && Number.isFinite(Number(r.atraso_partida))).map(r => Number(r.atraso_partida));
+        document.getElementById('h-total').textContent = rows.length;
+        document.getElementById('h-real').textContent = real;
+        document.getElementById('h-canc').textContent = canc;
+        document.getElementById('h-real-pct').textContent = rows.length ? `${(real / rows.length * 100).toFixed(1)}%` : '—';
+        document.getElementById('h-canc-pct').textContent = rows.length ? `${(canc / rows.length * 100).toFixed(1)}%` : '—';
+        document.getElementById('h-atraso').textContent = delays.length ? (delays.reduce((a,b) => a+b, 0)/delays.length).toFixed(1) : '—';
+        document.getElementById('hist-stats').style.display = 'grid';
+        meta.textContent = `${rows.length} registros para ${icao} em ${month}.`;
+        renderHistorico();
+      } catch(e) {
+        if (request === historyRequest) meta.textContent = 'Erro ao consultar histórico: ' + e.message;
+      }
+    }
+
+    function setPageH(page) { pagHist = page; renderHistorico(); }
+    function renderHistorico() {
+      document.getElementById('tbody-historico').innerHTML = histAll.length
+        ? histAll.slice((pagHist-1)*PER_PAGE, pagHist*PER_PAGE).map(r => `<tr>
+          <td>${escapeHtml(r.nr_voo)}</td><td>${escapeHtml(r.icao_empresa)}</td>
+          <td>${escapeHtml(fmtData(r.dt_referencia))}</td><td>${escapeHtml(r.icao_origem)}</td>
+          <td>${escapeHtml(r.icao_destino)}</td><td>${escapeHtml(r.atraso_partida ?? '—')}</td>
+          <td>${situacaoBadge(r.situacao)}</td></tr>`).join('')
+        : '<tr><td colspan="7" class="empty">Nenhum registro para a consulta.</td></tr>';
+      renderPagination('pag-historico', histAll, pagHist, 'setPageH');
+    }
+
+
+    /* ── Init ─────────────────────────────────────── */
+    loadAirports();
+    setInterval(() => { if (currentIcao) loadFlights(); }, 300000);
+  </script>
+</body>
+</html>
+
