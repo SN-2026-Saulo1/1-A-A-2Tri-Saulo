@@ -43,3 +43,4 @@ jobs:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ANO_MES:              ${{ github.event.inputs.ano_mes }}
+

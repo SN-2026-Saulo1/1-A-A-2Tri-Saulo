@@ -47,3 +47,4 @@ jobs:
 
       # Sem etapa de commit — dados vão direto ao Supabase
       # O repositório armazena apenas código
+
