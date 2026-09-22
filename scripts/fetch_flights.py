@@ -120,11 +120,9 @@ def buscar_voos_siros() -> list:
         if isinstance(decoded, list):
             print(f"  Total retornado pela API SIROS: {len(decoded)} voos")
             return decoded
-        print(f"  [AVISO] Formato inesperado na resposta: {type(decoded)}")
-        return []
+        raise ValueError(f"Formato inesperado na resposta: {type(decoded).__name__}")
     except Exception as e:
-        print(f"  [ERRO] Falha ao buscar voos no SIROS: {e}")
-        return []
+        raise RuntimeError(f"Falha ao buscar voos no SIROS: {e}") from e
 
 
 def normalizar_voo(f: dict) -> dict:
@@ -179,12 +177,18 @@ def registrar_execucao(
         }).execute()
         print(f"\n  Log de execução salvo — status: {status}")
     except Exception as e:
-        print(f"  [AVISO] Não foi possível salvar o log de execução: {e}")
+        print(f"  [ERRO CRÍTICO] Não foi possível salvar o log de execução: {e}")
+        sys.exit(1)
 
 
 # ── Execução principal ────────────────────────────────────────────────────────
 
-todos_voos = buscar_voos_siros()
+try:
+    todos_voos = buscar_voos_siros()
+except Exception as e:
+    print(f"[ERRO CRÍTICO] {e}")
+    registrar_execucao(AIRPORTS, 0, 0, 1, "erro_critico", str(e))
+    sys.exit(1)
 
 if not todos_voos:
     print("\n[AVISO] Nenhum voo retornado pela API SIROS. Encerrando.")
@@ -211,6 +215,17 @@ print(
     "(data_referencia + icao_empresa + numero_voo + icao_origem + icao_destino + etapa). "
     "Voos já existentes são atualizados — sem duplicatas."
 )
+
+def deduplicar(registros: list[dict]) -> list[dict]:
+    """Mantém o último registro por chave do upsert antes de dividir em lotes."""
+    campos = ("data_referencia", "icao_empresa", "numero_voo",
+              "icao_origem", "icao_destino", "etapa")
+    unicos = {tuple(registro[c] for c in campos): registro for registro in registros}
+    print(f"Duplicados removidos: {len(registros) - len(unicos)}")
+    return list(unicos.values())
+
+
+registros = deduplicar(registros)
 
 # Envio em lotes ao Supabase
 total_processados = 0
@@ -256,3 +271,4 @@ print(f"\nConcluído — {total_processados} registros enviados/processados em {
 if total_erros > 0:
     print(f"\n[ATENÇÃO] {total_erros} lote(s) com erro — workflow finalizado com falha.")
     sys.exit(1)
+
