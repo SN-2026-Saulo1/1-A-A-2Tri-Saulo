@@ -145,7 +145,7 @@
 
   <!-- ⚠️ CONFIGURAÇÃO — Substitua pelos valores do seu projeto Supabase -->
   <script>
-    const SUPABASE_URL      = "https://vjwfzmzunqfnsbnzfofd.supabase.co";
+    const SUPABASE_URL      = "https://redfwwsldubggjykjuhr.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqd2Z6bXp1bnFmbnNibnpmb2ZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4ODgwNjcsImV4cCI6MjA5NjQ2NDA2N30.U_aWn-omsM1wjQLrig5uN2zzWgB8BafYm5DpDfVEIuU";
     const PER_PAGE          = 50;
   </script>
@@ -460,8 +460,14 @@
         document.getElementById('meta-bar').textContent = 'Erro ao carregar aeroportos: ' + e.message;
       }
 
-      // Define data padrão como hoje
-      document.getElementById('sel-date').value = todayIso();
+      // Exibe inicialmente a data mais recente disponível no banco restaurado.
+      // Se a tabela estiver vazia ou indisponível, mantém a data de hoje.
+      const dateInput = document.getElementById('sel-date');
+      dateInput.value = todayIso();
+      try {
+        const latest = await sbFetch('voos?select=data_referencia&order=data_referencia.desc&limit=1');
+        if (latest?.[0]?.data_referencia) dateInput.value = latest[0].data_referencia;
+      } catch (_) {}
     }
 
     function onStateChange() {
@@ -630,13 +636,17 @@
     }
 
     /* ── Renderização ────────────────────────────── */
+    function airportLabel(icao) {
+      if (!icao) return '—';
+      const ap = airports.find(a => a.icao === icao);
+      return ap ? `${icao} – ${ap.name} (${ap.city}/${ap.state})` : icao;
+    }
+
     function renderRow(f, kind) {
       const horario = kind === 'arrival'
         ? fmtHora(f.chegada_iso)
         : fmtHora(f.partida_iso);
-      const rota = kind === 'arrival'
-        ? (f.icao_origem || '—')
-        : (f.icao_destino || '—');
+      const rota = airportLabel(kind === 'arrival' ? f.icao_origem : f.icao_destino);
       const assentos = f.assentos
         ? `<span class="seats-pill">✦ ${escapeHtml(f.assentos)}</span>` : '—';
       return `<tr>
@@ -769,4 +779,5 @@
   </script>
 </body>
 </html>
+
 
